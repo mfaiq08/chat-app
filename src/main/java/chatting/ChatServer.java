@@ -1,70 +1,68 @@
-package chatting;
+package whatsapp;
+
 import java.io.*;
 import java.net.*;
 import java.util.*;
+import java.util.concurrent.*;
 
-public class ChatServer {
+public class Server {
     private static final int PORT = 12345;
-    private static Map<Socket, String> clientNames = new HashMap<>();
-    private static Set<Socket> clientSockets = new HashSet<>();
+    private static Set<PrintWriter> clientWriters = ConcurrentHashMap.newKeySet();
+    private static Map<Socket, String> clientNames = new ConcurrentHashMap<>();
 
     public static void main(String[] args) {
-        System.out.println("Chat server started...");
+        System.out.println("🚀 Server is running on port " + PORT);
+
         try (ServerSocket serverSocket = new ServerSocket(PORT)) {
             while (true) {
-                Socket client = serverSocket.accept();
-                clientSockets.add(client);
-                new ClientHandler(client).start();
+                Socket clientSocket = serverSocket.accept();
+                System.out.println("🔌 Client connected: " + clientSocket.getInetAddress());
+
+                // Start a new thread for each client
+                new Thread(() -> handleClient(clientSocket)).start();
             }
         } catch (IOException e) {
-            e.printStackTrace();
+            System.out.println("❗ Server error: " + e.getMessage());
         }
     }
 
-    private static class ClientHandler extends Thread {
-        private Socket socket;
-        private BufferedReader in;
-        private PrintWriter out;
-        private String userName;
+    private static void handleClient(Socket socket) {
+        try (
+                BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+                PrintWriter out = new PrintWriter(socket.getOutputStream(), true)
+        ) {
+            clientWriters.add(out);
 
-        public ClientHandler(Socket socket) {
-            this.socket = socket;
-        }
+            // Read client's name
+            String name = in.readLine();
+            clientNames.put(socket, name);
+            broadcast("💬 " + name + " joined the chat", out);
 
-        public void run() {
-            try {
-                in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-                out = new PrintWriter(socket.getOutputStream(), true);
-
-                // Read username first
-                userName = in.readLine();
-                clientNames.put(socket, userName);
-                broadcast(">> " + userName + " has joined the chat!");
-
-                String message;
-                while ((message = in.readLine()) != null) {
-                    broadcast("[" + userName + "]: " + message);
-                }
-            } catch (IOException e) {
-                System.out.println(userName + " disconnected.");
-            } finally {
-                try {
-                    socket.close();
-                } catch (IOException e) { }
-                clientSockets.remove(socket);
-                clientNames.remove(socket);
-                broadcast(">> " + userName + " has left the chat.");
+            String message;
+            while ((message = in.readLine()) != null) {
+                System.out.println(name + ": " + message);
+                broadcast(name + ": " + message, out);
             }
-        }
 
-        private void broadcast(String message) {
-            for (Socket client : clientSockets) {
-                try {
-                    PrintWriter writer = new PrintWriter(client.getOutputStream(), true);
-                    writer.println(message);
-                } catch (IOException e) {
-                    e.printStackTrace();
-                }
+        } catch (IOException e) {
+            System.out.println("❌ A client disconnected.");
+        } finally {
+            clientWriters.removeIf(writer -> writer.checkError());
+            String name = clientNames.get(socket);
+            if (name != null) {
+                broadcast("🚪 " + name + " left the chat", null);
+                clientNames.remove(socket);
+            }
+            try {
+                socket.close();
+            } catch (IOException ignored) {}
+        }
+    }
+
+    private static void broadcast(String message, PrintWriter exclude) {
+        for (PrintWriter writer : clientWriters) {
+            if (writer != exclude) {
+                writer.println(message);
             }
         }
     }
